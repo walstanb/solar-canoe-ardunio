@@ -1,145 +1,207 @@
+// Include required libraries
+#include <TinyGPS++.h>
 #include <SoftwareSerial.h>
-static const int RXPin = 4, TXPin = 3;
-static const uint32_t GPSBaud = 4800;
+#include <SPI.h>
+#include <SD.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_HMC5883_U.h>
 
+Adafruit_HMC5883_Unified mag = Adafruit_HMC5883_Unified(12345);
+
+
+// GPS Connections
+static const int RXPin = 4, TXPin = 3;
+
+// GPS Baud rate (change if required)
+static const uint32_t GPSBaud = 9600;
+
+// SD Card Select pin
+const int chipSelect = 5;
+
+// String to hold GPS data
+String gpstext;
+
+// GPS write delay counter variables
+// Change gpsttlcount as required
+int gpscount = 0;
+int gpsttlcount = 60;
+
+// TinyGPS++ object
 TinyGPSPlus gps;
 
+// SoftwareSerial connection to the GPS device
 SoftwareSerial ss(RXPin, TXPin);
- 
+
 void setup()
 {
+  
+  // Start Serial Monitor for debugging
   Serial.begin(115200);
+
+  // Start SoftwareSerial
   ss.begin(GPSBaud);
- 
-  Serial.println();
-  Serial.println(F("Sats HDOP  Latitude   Longitude   Fix  Date       Time     Date Alt    Course Speed Card  Distance Course Card  Chars Sentences Checksum"));
-  Serial.println(F("           (deg)      (deg)       Age                      Age  (m)    --- from GPS ----  ---- to London  ----  RX    RX        Fail"));
-  Serial.println(F("----------------------------------------------------------------------------------------------------------------------------------------"));
+
+  if(!mag.begin())
+  {
+    Serial.println("Ooops, no HMC5883 detected ... Check your wiring!");
+    while(1);
+  }
+
+  // Initialize SD card
+  if (!SD.begin(chipSelect)) {
+    Serial.println("Card failed, or not present");
+    //don't do anything more:
+    while (1);
+  }
+  Serial.println("card initialized.");
 }
- 
+
 void loop()
 {
-  static const double LONDON_LAT = 51.508131, LONDON_LON = -0.128002;
+  sensors_event_t event; 
+  mag.getEvent(&event);
  
-  printInt(gps.satellites.value(), gps.satellites.isValid(), 5);
-  printFloat(gps.hdop.hdop(), gps.hdop.isValid(), 6, 1);
-  printFloat(gps.location.lat(), gps.location.isValid(), 11, 6);
-  printFloat(gps.location.lng(), gps.location.isValid(), 12, 6);
-  printInt(gps.location.age(), gps.location.isValid(), 5);
-  printDateTime(gps.date, gps.time);
-  printFloat(gps.altitude.meters(), gps.altitude.isValid(), 7, 2);
-  printFloat(gps.course.deg(), gps.course.isValid(), 7, 2);
-  printFloat(gps.speed.kmph(), gps.speed.isValid(), 6, 2);
-  printStr(gps.course.isValid() ? TinyGPSPlus::cardinal(gps.course.deg()) : "*** ", 6);
- 
-  unsigned long distanceKmToLondon =
-    (unsigned long)TinyGPSPlus::distanceBetween(
-      gps.location.lat(),
-      gps.location.lng(),
-      LONDON_LAT, 
-      LONDON_LON) / 1000;
-  printInt(distanceKmToLondon, gps.location.isValid(), 9);
- 
-  double courseToLondon =
-    TinyGPSPlus::courseTo(
-      gps.location.lat(),
-      gps.location.lng(),
-      LONDON_LAT, 
-      LONDON_LON);
- 
-  printFloat(courseToLondon, gps.location.isValid(), 7, 2);
- 
-  const char *cardinalToLondon = TinyGPSPlus::cardinal(courseToLondon);
- 
-  printStr(gps.location.isValid() ? cardinalToLondon : "*** ", 6);
- 
-  printInt(gps.charsProcessed(), true, 6);
-  printInt(gps.sentencesWithFix(), true, 10);
-  printInt(gps.failedChecksum(), true, 9);
-  Serial.println();
-  
-  smartDelay(1000);
- 
-  if (millis() > 5000 && gps.charsProcessed() < 10)
-    Serial.println(F("No GPS data received: check wiring"));
+
+
+  // See if data available
+  while (ss.available() > 0)
+    if (gps.encode(ss.read()))
+
+      // See if we have a complete GPS data string
+      if (displayInfo() != "0")
+      {
+
+        // Get GPS string
+        gpstext = displayInfo();
+
+        // Get magnetic heading
+        gpstext += String(event.magnetic.x);
+        gpstext += (",");
+        gpstext += String(event.magnetic.y);
+        gpstext += (",");
+        gpstext += String(event.magnetic.z);
+
+
+        // Check GPS Count
+        if (gpscount == gpsttlcount) {
+
+
+          //Open the file on card for writing
+          File dataFile = SD.open("gpslog.csv", FILE_WRITE);
+
+          if (dataFile) {
+
+            // If the file is available, write to it and close the file
+            dataFile.println(gpstext);
+            dataFile.close();
+
+            // Serial print GPS string for debugging
+            Serial.println(gpstext);
+          }
+          // If the file isn't open print an error message for debugging
+          else {
+            Serial.println("error opening gpslog.txt");
+          }
+
+        }
+        // Increment GPS Count
+        gpscount = gpscount + 1;
+        if (gpscount > gpsttlcount) {
+          gpscount = 0;
+        }
+
+      }
+
+
 }
- 
-static void smartDelay(unsigned long ms)
+
+// Function to return GPS string
+String displayInfo()
 {
-  unsigned long start = millis();
-  do 
+  // Define empty string to hold output
+  String gpsdata = "";
+
+  // Get Date
+  if (gps.date.isValid())
   {
-    while (ss.available())
-      gps.encode(ss.read());
-  } while (millis() - start < ms);
-}
- 
-static void printFloat(float val, bool valid, int len, int prec)
-{
-  if (!valid)
-  {
-    while (len-- > 1)
-      Serial.print('*');
-    Serial.print(' ');
+    gpsdata += String(gps.date.year());
+    gpsdata += ("-");
+    if (gps.date.month() < 10) gpsdata += ("0");
+    gpsdata += String(gps.date.month());
+    gpsdata += ("-");
+    if (gps.date.day() < 10) gpsdata += ("0");
+    gpsdata += String(gps.date.day());
+    gpsdata += (",");
   }
   else
   {
-    Serial.print(val, prec);
-    int vi = abs((int)val);
-    int flen = prec + (val < 0.0 ? 2 : 1); // . and -
-    flen += vi >= 1000 ? 4 : vi >= 100 ? 3 : vi >= 10 ? 2 : 1;
-    for (int i=flen; i<len; ++i)
-      Serial.print(' ');
+    return "0";
   }
-  smartDelay(0);
-}
- 
-static void printInt(unsigned long val, bool valid, int len)
-{
-  char sz[32] = "*****************";
-  if (valid)
-    sprintf(sz, "%ld", val);
-  sz[len] = 0;
-  for (int i=strlen(sz); i<len; ++i)
-    sz[i] = ' ';
-  if (len > 0) 
-    sz[len-1] = ' ';
-  Serial.print(sz);
-  smartDelay(0);
-}
- 
-static void printDateTime(TinyGPSDate &d, TinyGPSTime &t)
-{
-  if (!d.isValid())
+
+  // Get time
+  if (gps.time.isValid())
   {
-    Serial.print(F("********** "));
+    if (gps.time.hour() < 10) gpsdata += ("0");
+    gpsdata += String(gps.time.hour());
+    gpsdata += (":");
+    if (gps.time.minute() < 10) gpsdata += ("0");
+    gpsdata += String(gps.time.minute());
+    gpsdata += (":");
+    if (gps.time.second() < 10) gpsdata += ("0");
+    gpsdata += String(gps.time.second());
+    gpsdata += (",");
   }
   else
   {
-    char sz[32];
-    sprintf(sz, "%02d/%02d/%02d ", d.month(), d.day(), d.year());
-    Serial.print(sz);
+    return "0";
   }
-  
-  if (!t.isValid())
+
+  // Get latitude and longitude
+  if (gps.location.isValid())
   {
-    Serial.print(F("******** "));
+    gpsdata += String(gps.location.lat());
+    gpsdata += (",");
+    gpsdata += String(gps.location.lng());
+    gpsdata += (",");
   }
   else
   {
-    char sz[32];
-    sprintf(sz, "%02d:%02d:%02d ", t.hour(), t.minute(), t.second());
-    Serial.print(sz);
+    return "0";
   }
- 
-  printInt(d.age(), d.isValid(), 5);
-  smartDelay(0);
-}
- 
-static void printStr(const char *str, int len)
-{
-  int slen = strlen(str);
-  for (int i=0; i<len; ++i)
-    Serial.print(i<slen ? str[i] : ' ');
-  smartDelay(0);
+
+    // Get altitude
+    if (gps.altitude.isValid())
+    {
+        gpsdata += String(gps.altitude.meters());
+        gpsdata += (",");
+    }
+    else
+    {
+        return "0";
+    }
+
+    // Get speed
+    if (gps.speed.isValid())
+    {
+        gpsdata += String(gps.speed.kmph());
+        gpsdata += (",");
+    }
+    else
+    {
+        return "0";
+    }
+
+    // Get satellites
+    if (gps.satellites.isValid())
+    {
+        gpsdata += String(gps.satellites.value());
+        gpsdata += (",");
+    }
+    else
+    {
+        return "0";
+    }
+
+  return gpsdata;
 }
